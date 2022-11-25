@@ -13,7 +13,20 @@ mod godot_api;
 mod itest;
 mod util;
 
-#[proc_macro_derive(GodotClass, attributes(class, property, export, base, signal))]
+#[proc_macro_derive(
+    GodotClass,
+    attributes(
+        class,
+        property,
+        export,
+        base,
+        signal,
+        getter,
+        setter,
+        name,
+        variant_type
+    )
+)]
 pub fn derive_native_class(input: TokenStream) -> TokenStream {
     translate(input, derive_godot_class::transform)
 }

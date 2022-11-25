@@ -258,6 +258,7 @@ pub mod callbacks {
     use super::*;
     use crate::bind::GodotExt;
     use crate::builder::ClassBuilder;
+    use crate::builtin::meta::PropertyInfo;
     use crate::obj::Base;
 
     pub unsafe extern "C" fn create<T: cap::GodotInit>(
@@ -372,13 +373,17 @@ pub mod callbacks {
         T::register_class(&mut class_builder);
     }
 
-    pub fn register_user_binds<T: cap::ImplementsGodotApi>(_class_builder: &mut dyn Any) {
+    pub fn register_user_binds<T: cap::ImplementsGodotApi + cap::GodotProperties>(
+        _class_builder: &mut dyn Any,
+    ) {
         // let class_builder = class_builder
         //     .downcast_mut::<ClassBuilder<T>>()
         //     .expect("bad type erasure");
 
         //T::register_methods(class_builder);
         T::__register_methods();
+
+        T::__register_properties();
     }
 }
 

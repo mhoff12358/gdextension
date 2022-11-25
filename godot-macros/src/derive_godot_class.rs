@@ -39,6 +39,8 @@ pub fn transform(input: TokenStream) -> ParseResult<TokenStream> {
         create_fn = quote! { None };
     };
 
+    let godot_properties_impl = make_godot_properties_impl(class_name, struct_cfg.properties);
+
     Ok(quote! {
         impl ::godot::obj::GodotClass for #class_name {
             type Base = ::godot::engine::#base_ty;
@@ -49,6 +51,7 @@ pub fn transform(input: TokenStream) -> ParseResult<TokenStream> {
         }
 
         #godot_init_impl
+        #godot_properties_impl
         #deref_impl
 
         ::godot::sys::plugin_add!(__GODOT_PLUGIN_REGISTRY in #prv; #prv::ClassPlugin {
@@ -104,6 +107,7 @@ fn parse_struct_attributes(class: &Struct) -> ParseResult<ClassAttributes> {
     Ok(ClassAttributes {
         base_ty: base,
         has_generated_init,
+        properties: parse_property_attrs(&class.attributes)?,
     })
 }
 
@@ -181,12 +185,102 @@ fn parse_class_attr(attributes: &Vec<Attribute>) -> ParseResult<Option<(Span, Kv
     Ok(godot_attr)
 }
 
+fn parse_property_attrs(attributes: &Vec<Attribute>) -> ParseResult<Vec<PropertyInfoAttribute>> {
+    let mut property_attributes = Vec::<PropertyInfoAttribute>::new();
+    for attr in attributes.iter() {
+        let path = &attr.path;
+        if path_is_single(path, "property") {
+            let property_name: String;
+            let property_variant_type: String;
+            let property_getter: String;
+            let property_setter: String;
+            let mut map = util::parse_kv_group(&attr.value)?;
+            if let Some(name) = map.remove("name") {
+                if let KvValue::Lit(name) = name {
+                    property_name = name.clone();
+                } else {
+                    return bail::<Vec<PropertyInfoAttribute>, _>(
+                        "#[property] attribute with a name that isn't an identifier",
+                        attr,
+                    );
+                }
+            } else {
+                return bail::<Vec<PropertyInfoAttribute>, _>(
+                    "#[property] attribute without any name",
+                    attr,
+                );
+            }
+            if let Some(variant_type) = map.remove("variant_type") {
+                if let KvValue::Lit(variant_type) = variant_type {
+                    property_variant_type = variant_type.clone();
+                } else {
+                    return bail::<Vec<PropertyInfoAttribute>, _>(
+                        "#[property] attribute with a variant_type that isn't an identifier",
+                        attr,
+                    );
+                }
+            } else {
+                return bail::<Vec<PropertyInfoAttribute>, _>(
+                    "#[property] attribute without any variant_type",
+                    attr,
+                );
+            }
+            if let Some(getter) = map.remove("getter") {
+                if let KvValue::Lit(getter) = getter {
+                    property_getter = getter.clone();
+                } else {
+                    return bail::<Vec<PropertyInfoAttribute>, _>(
+                        "#[property] attribute with a getter that isn't an identifier",
+                        attr,
+                    );
+                }
+            } else {
+                return bail::<Vec<PropertyInfoAttribute>, _>(
+                    "#[property] attribute without any getter",
+                    attr,
+                );
+            }
+            if let Some(setter) = map.remove("setter") {
+                if let KvValue::Lit(setter) = setter {
+                    property_setter = setter.clone();
+                } else {
+                    return bail::<Vec<PropertyInfoAttribute>, _>(
+                        "#[property] attribute with a setter that isn't an identifier",
+                        attr,
+                    );
+                }
+            } else {
+                return bail::<Vec<PropertyInfoAttribute>, _>(
+                    "#[property] attribute without any setter",
+                    attr,
+                );
+            }
+            ensure_kv_empty(map, attr.__span())?;
+            property_attributes.push(PropertyInfoAttribute {
+                name: property_name,
+                getter: property_getter,
+                setter: property_setter,
+                variant_type: property_variant_type,
+            });
+        }
+    }
+    Ok(property_attributes)
+}
+
 // ----------------------------------------------------------------------------------------------------------------------------------------------
 // General helpers
+
+struct PropertyInfoAttribute {
+    name: String,
+    getter: String,
+    setter: String,
+    variant_type: String,
+}
 
 struct ClassAttributes {
     base_ty: Ident,
     has_generated_init: bool,
+    properties: Vec<PropertyInfoAttribute>,
 }
 
 struct Fields {
@@ -225,6 +319,56 @@ fn make_godot_init_impl(class_name: &Ident, fields: Fields) -> TokenStream {
                 Self {
                     #( #rest_init )*
                     #base_init
+                }
+            }
+        }
+    }
+}
+
+fn make_godot_properties_impl(
+    class_name: &Ident,
+    properties: Vec<PropertyInfoAttribute>,
+) -> TokenStream {
+    let property_info_tokens: Vec<TokenStream> = properties
+        .into_iter()
+        .map(|property_info: PropertyInfoAttribute| -> TokenStream {
+            use std::str::FromStr;
+            let name = proc_macro2::Literal::from_str(&property_info.name).unwrap();
+            let getter = proc_macro2::Literal::from_str(&property_info.getter).unwrap();
+            let setter = proc_macro2::Literal::from_str(&property_info.setter).unwrap();
+            let variant_type = property_info.variant_type;
+            quote! {
+                let class_name = StringName::from(#class_name::CLASS_NAME);
+                let property_info = PropertyInfo::new(
+                    //#variant_type,
+                    ::godot_ffi::VariantType::Int,
+                    ::godot_core::builtin::meta::ClassName::new::<#class_name>(),
+                    StringName::from(#name),
+                );
+                let property_info_sys = property_info.property_sys();
+
+                let getter_string_name = StringName::from(#getter);
+                let setter_string_name = StringName::from(#setter);
+                godot::sys::interface_fn!(classdb_register_extension_class_property)(
+                    godot::sys::get_library(),
+                    class_name.string_sys(),
+                    std::ptr::addr_of!(property_info_sys),
+                    setter_string_name.string_sys(),
+                    getter_string_name.string_sys(),
+                );
+            }
+        })
+        .collect();
+    quote! {
+        impl ::godot::obj::cap::GodotProperties for #class_name {
+
+            fn __register_properties() {
+                unsafe {
+                    #(
+                        {
+                            #property_info_tokens
+                        }
+                    )*
                 }
             }
         }

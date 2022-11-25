@@ -4,9 +4,16 @@
  * file, You can obtain one at https://mozilla.org/MPL/2.0/.
  */
 
-use crate::obj::Base;
+use crate::{builtin::meta::PropertyInfo, obj::Base};
 
 use godot_ffi as sys;
+
+pub struct GodotClassPropertyInfo {
+    pub variant_type: godot_ffi::VariantType,
+    pub name: String,
+    pub getter: String,
+    pub setter: String,
+}
 
 /// Makes `T` eligible to be managed by Godot and stored in [`Gd<T>`][crate::obj::Gd] pointers.
 ///
@@ -26,6 +33,8 @@ where
     type Mem: mem::Memory;
 
     const CLASS_NAME: &'static str;
+
+    const PROPERTIES: Vec<GodotClassPropertyInfo> = Vec::new();
 }
 
 /// Unit impl only exists to represent "no base", and is used for exactly one class: `Object`.
@@ -92,6 +101,11 @@ pub mod cap {
     pub trait GodotInit: GodotClass {
         #[doc(hidden)]
         fn __godot_init(base: Base<Self::Base>) -> Self;
+    }
+
+    pub trait GodotProperties: GodotClass {
+        #[doc(hidden)]
+        fn __register_properties();
     }
 
     /// Auto-implemented for `#[godot_api] impl MyClass` blocks
