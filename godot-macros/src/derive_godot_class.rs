@@ -4,7 +4,9 @@
  * file, You can obtain one at https://mozilla.org/MPL/2.0/.
  */
 
-use crate::util::{bail, ensure_kv_empty, ident, path_is_single, KvMap, KvValue};
+use std::str::FromStr;
+
+use crate::util::{bail, bail_error, ensure_kv_empty, ident, path_is_single, KvMap, KvValue};
 use crate::{util, ParseResult};
 use proc_macro2::{Ident, Punct, Span, TokenStream};
 use quote::spanned::Spanned;
@@ -185,70 +187,47 @@ fn parse_class_attr(attributes: &Vec<Attribute>) -> ParseResult<Option<(Span, Kv
     Ok(godot_attr)
 }
 
+/// Tries to remove and return the string literal value associcated with the given argument.
+/// Either returns the value, or an error string explaining the issue that should be shown to the user.
+fn require_property_string_argument(kv_map: &mut KvMap, argument: &str) -> Result<String, String> {
+    if let Some(value) = kv_map.remove(argument) {
+        if let KvValue::Lit(value) = value {
+            if proc_macro2::Literal::from_str(&value).is_ok() {
+                return Ok(value);
+            }
+        }
+        return Err(format!(
+            "#[property] attribute with a {} that isn't a string literal",
+            argument
+        ));
+    } else {
+        return Err(format!("#[property] attribute without any {}", argument));
+    }
+}
+
 fn parse_property_attrs(attributes: &Vec<Attribute>) -> ParseResult<Vec<PropertyInfoAttribute>> {
     let mut property_attributes = Vec::<PropertyInfoAttribute>::new();
     for attr in attributes.iter() {
         let path = &attr.path;
         if path_is_single(path, "property") {
-            let property_name: String;
-            let property_variant_type: String;
-            let property_getter: String;
-            let property_setter: String;
             let mut map = util::parse_kv_group(&attr.value)?;
-            if let Some(name) = map.remove("name") {
-                if let KvValue::Lit(name) = name {
-                    property_name = name.clone();
-                } else {
-                    return bail(
-                        "#[property] attribute with a name that isn't an identifier",
-                        attr,
-                    );
-                }
-            } else {
-                return bail("#[property] attribute without any name", attr);
-            }
-            if let Some(variant_type) = map.remove("variant_type") {
-                if let KvValue::Lit(variant_type) = variant_type {
-                    property_variant_type = variant_type.clone();
-                } else {
-                    return bail(
-                        "#[property] attribute with a variant_type that isn't an identifier",
-                        attr,
-                    );
-                }
-            } else {
-                return bail("#[property] attribute without any variant_type", attr);
-            }
-            if let Some(getter) = map.remove("getter") {
-                if let KvValue::Lit(getter) = getter {
-                    property_getter = getter.clone();
-                } else {
-                    return bail(
-                        "#[property] attribute with a getter that isn't an identifier",
-                        attr,
-                    );
-                }
-            } else {
-                return bail("#[property] attribute without any getter", attr);
-            }
-            if let Some(setter) = map.remove("setter") {
-                if let KvValue::Lit(setter) = setter {
-                    property_setter = setter.clone();
-                } else {
-                    return bail(
-                        "#[property] attribute with a setter that isn't an identifier",
-                        attr,
-                    );
-                }
-            } else {
-                return bail("#[property] attribute without any setter", attr);
-            }
+            // Parse all the required arguments, returning an error if any are missing.
+            let name = require_property_string_argument(&mut map, "name")
+                .map_err(|error_string: String| bail_error(error_string, attr))?;
+            let getter = require_property_string_argument(&mut map, "getter")
+                .map_err(|error_string: String| bail_error(error_string, attr))?;
+            let setter = require_property_string_argument(&mut map, "setter")
+                .map_err(|error_string: String| bail_error(error_string, attr))?;
+            // This is currently unused and unparsed.
+            let variant_type: String = "".to_string();
+            // Ensure no unhandled arguments are provided.
             ensure_kv_empty(map, attr.__span())?;
+
             property_attributes.push(PropertyInfoAttribute {
-                name: property_name,
-                getter: property_getter,
-                setter: property_setter,
-                variant_type: property_variant_type,
+                name: name,
+                getter: getter,
+                setter: setter,
+                variant_type: variant_type,
             });
         }
     }
@@ -321,7 +300,6 @@ fn make_godot_properties_impl(
         properties
             .into_iter()
             .map(|property_info: PropertyInfoAttribute| -> TokenStream {
-                use std::str::FromStr;
                 let name = proc_macro2::Literal::from_str(&property_info.name).unwrap();
                 let getter = proc_macro2::Literal::from_str(&property_info.getter).unwrap();
                 let setter = proc_macro2::Literal::from_str(&property_info.setter).unwrap();
@@ -353,8 +331,8 @@ fn make_godot_properties_impl(
         impl ::godot::obj::cap::GodotProperties for #class_name {
 
             fn __register_properties() {
-                use ::godot_core::builtin::StringName;
-                use ::godot_core::builtin::meta::PropertyInfo;
+                use godot::builtin::StringName;
+                use godot::builtin::meta::PropertyInfo;
                 #(
                     {
                         #property_info_tokens

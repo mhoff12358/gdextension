@@ -22,11 +22,18 @@ pub fn strlit(s: &str) -> Literal {
     Literal::string(s)
 }
 
+pub fn bail_error<T>(msg: impl AsRef<str>, tokens: T) -> Error
+where
+    T: Spanned,
+{
+    Error::new_at_span(tokens.__span(), msg.as_ref())
+}
+
 pub fn bail<R, T>(msg: impl AsRef<str>, tokens: T) -> Result<R, Error>
 where
     T: Spanned,
 {
-    Err(Error::new_at_span(tokens.__span(), msg.as_ref()))
+    Err(bail_error(msg, tokens))
 }
 
 pub fn reduce_to_signature(function: &Function) -> Function {
