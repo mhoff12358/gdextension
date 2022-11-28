@@ -384,7 +384,6 @@ fn make_deref_impl(class_name: &Ident, fields: &Fields) -> TokenStream {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use proc_macro2::TokenStream;
     use quote::quote;
 
     macro_rules! hash_map {
