@@ -13,6 +13,11 @@ use quote::spanned::Spanned;
 use quote::{format_ident, quote};
 use venial::{Attribute, NamedField, Struct, StructFields, TyExpr};
 
+// Property attribute argument strings.
+const name_argument: &str = "name";
+const getter_argument: &str = "getter";
+const setter_argument: &str = "setter";
+
 pub fn transform(input: TokenStream) -> ParseResult<TokenStream> {
     let decl = venial::parse_declaration(input)?;
 
@@ -103,7 +108,7 @@ fn parse_struct_attributes(class: &Struct) -> ParseResult<ClassAttributes> {
                 _ => bail("Argument 'init' must not have a value", span)?,
             }
         }
-        ensure_kv_empty(map, span)?;
+        ensure_kv_empty(&map, span)?;
     }
 
     Ok(ClassAttributes {
@@ -192,9 +197,7 @@ fn parse_class_attr(attributes: &Vec<Attribute>) -> ParseResult<Option<(Span, Kv
 fn require_property_string_argument(kv_map: &mut KvMap, argument: &str) -> Result<String, String> {
     if let Some(value) = kv_map.remove(argument) {
         if let KvValue::Lit(value) = value {
-            if proc_macro2::Literal::from_str(&value).is_ok() {
-                return Ok(value);
-            }
+            return Ok(value);
         }
         return Err(format!(
             "#[property] attribute with a {} that isn't a string literal",
@@ -205,30 +208,39 @@ fn require_property_string_argument(kv_map: &mut KvMap, argument: &str) -> Resul
     }
 }
 
+fn parse_property_attrs_from_kv_map<T: quote::ToTokens>(
+    kv_map: &mut KvMap,
+    tokens: &T,
+) -> ParseResult<PropertyInfoAttribute> {
+    // Parse all the required arguments, returning an error if any are missing.
+    let name = require_property_string_argument(kv_map, name_argument)
+        .map_err(|error_string: String| bail_error(error_string, tokens))?;
+    let getter = require_property_string_argument(kv_map, getter_argument)
+        .map_err(|error_string: String| bail_error(error_string, tokens))?;
+    let setter = require_property_string_argument(kv_map, setter_argument)
+        .map_err(|error_string: String| bail_error(error_string, tokens))?;
+    // This is currently unused and unparsed.
+    let variant_type: String = "".to_string();
+    // Ensure no unhandled arguments are provided.
+    ensure_kv_empty(kv_map, tokens.__span())?;
+
+    return Ok(PropertyInfoAttribute {
+        name: name,
+        getter: getter,
+        setter: setter,
+        variant_type: variant_type,
+    });
+}
+
 fn parse_property_attrs(attributes: &Vec<Attribute>) -> ParseResult<Vec<PropertyInfoAttribute>> {
     let mut property_attributes = Vec::<PropertyInfoAttribute>::new();
     for attr in attributes.iter() {
         let path = &attr.path;
         if path_is_single(path, "property") {
-            let mut map = util::parse_kv_group(&attr.value)?;
-            // Parse all the required arguments, returning an error if any are missing.
-            let name = require_property_string_argument(&mut map, "name")
-                .map_err(|error_string: String| bail_error(error_string, attr))?;
-            let getter = require_property_string_argument(&mut map, "getter")
-                .map_err(|error_string: String| bail_error(error_string, attr))?;
-            let setter = require_property_string_argument(&mut map, "setter")
-                .map_err(|error_string: String| bail_error(error_string, attr))?;
-            // This is currently unused and unparsed.
-            let variant_type: String = "".to_string();
-            // Ensure no unhandled arguments are provided.
-            ensure_kv_empty(map, attr.__span())?;
-
-            property_attributes.push(PropertyInfoAttribute {
-                name: name,
-                getter: getter,
-                setter: setter,
-                variant_type: variant_type,
-            });
+            property_attributes.push(parse_property_attrs_from_kv_map(
+                &mut util::parse_kv_group(&attr.value)?,
+                attr,
+            )?);
         }
     }
     Ok(property_attributes)
@@ -237,6 +249,7 @@ fn parse_property_attrs(attributes: &Vec<Attribute>) -> ParseResult<Vec<Property
 // ----------------------------------------------------------------------------------------------------------------------------------------------
 // General helpers
 
+#[derive(Debug)]
 struct PropertyInfoAttribute {
     name: String,
     getter: String,
@@ -363,5 +376,89 @@ fn make_deref_impl(class_name: &Ident, fields: &Fields) -> TokenStream {
                 &mut *self.#base_field
             }
         }
+    }
+}
+
+// ----------------------------------------------------------------------------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use proc_macro2::TokenStream;
+    use quote::quote;
+
+    macro_rules! hash_map {
+        (
+            $($key:expr => $value:expr),*
+            $(,)?
+        ) => {
+            {
+                let mut map = std::collections::HashMap::new();
+                $(
+                    map.insert($key, $value);
+                )*
+                map
+            }
+        };
+    }
+
+    fn expect_parse_error<T: quote::ToTokens>(mut kv_map: KvMap, tokens: &T) {
+        assert!(parse_property_attrs_from_kv_map(&mut kv_map, tokens).is_err());
+    }
+
+    fn full_properties() -> KvMap {
+        hash_map!(
+            name_argument.to_string() => KvValue::Lit("\"test1\"".to_string()),
+            getter_argument.to_string() => KvValue::Lit("\"test2\"".to_string()),
+            setter_argument.to_string() => KvValue::Lit("\"test3\"".to_string()),
+        )
+    }
+
+    #[test]
+    fn test_properties_sucessful() {
+        assert!(parse_property_attrs_from_kv_map(&mut full_properties(), &quote! {}).is_ok());
+    }
+
+    #[test]
+    fn test_properties_missing_fields() {
+        fn remove_and_return(mut map: KvMap, key: &str) -> KvMap {
+            map.remove(key);
+            return map;
+        }
+        expect_parse_error(
+            remove_and_return(full_properties(), name_argument),
+            &quote! {},
+        );
+        expect_parse_error(
+            remove_and_return(full_properties(), getter_argument),
+            &quote! {},
+        );
+        expect_parse_error(
+            remove_and_return(full_properties(), setter_argument),
+            &quote! {},
+        );
+    }
+
+    #[test]
+    fn test_properties_not_literal() {
+        fn make_property_not_literal(mut map: KvMap, key: &str) -> KvMap {
+            map.insert(
+                key.to_string(),
+                KvValue::Ident(Ident::new("testIdent", Span::call_site())),
+            );
+            return map;
+        }
+        expect_parse_error(
+            make_property_not_literal(full_properties(), name_argument),
+            &quote! {},
+        );
+        expect_parse_error(
+            make_property_not_literal(full_properties(), getter_argument),
+            &quote! {},
+        );
+        expect_parse_error(
+            make_property_not_literal(full_properties(), setter_argument),
+            &quote! {},
+        );
     }
 }

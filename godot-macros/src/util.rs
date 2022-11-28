@@ -198,7 +198,7 @@ pub(crate) fn parse_kv_group(value: &venial::AttributeValue) -> ParseResult<KvMa
 
 /// At the end of processing a KV map, make sure it runs
 /// TODO refactor to a wrapper class and maybe destructor
-pub(crate) fn ensure_kv_empty(map: KvMap, span: Span) -> ParseResult<()> {
+pub(crate) fn ensure_kv_empty(map: &KvMap, span: Span) -> ParseResult<()> {
     if map.is_empty() {
         Ok(())
     } else {
