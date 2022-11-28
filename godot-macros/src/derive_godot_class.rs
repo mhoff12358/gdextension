@@ -319,10 +319,10 @@ fn make_godot_properties_impl(
                 let variant_type = property_info.variant_type;
                 quote! {
                     let class_name = StringName::from(#class_name::CLASS_NAME);
-                    let property_info = PropertyInfo::new(
+                    let property_info = ::godot::builtin::meta::PropertyInfo::new(
                         //#variant_type,
-                        ::godot_ffi::VariantType::Int,
-                        ::godot_core::builtin::meta::ClassName::new::<#class_name>(),
+                        ::godot::sys::VariantType::Int,
+                        ::godot::builtin::meta::ClassName::new::<#class_name>(),
                         StringName::from(#name),
                     );
                     let property_info_sys = property_info.property_sys();

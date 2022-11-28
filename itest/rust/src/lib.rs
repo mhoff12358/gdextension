@@ -14,6 +14,7 @@ mod enum_test;
 mod gdscript_ffi_test;
 mod node_test;
 mod object_test;
+mod property_test;
 mod singleton_test;
 mod string_test;
 mod utilities_test;
@@ -27,6 +28,7 @@ fn run_tests() -> bool {
     ok &= node_test::run();
     ok &= enum_test::run();
     ok &= object_test::run();
+    ok &= property_test::run();
     ok &= singleton_test::run();
     ok &= string_test::run();
     ok &= utilities_test::run();
