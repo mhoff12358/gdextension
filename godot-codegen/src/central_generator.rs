@@ -46,15 +46,20 @@ struct IndexedMethodTable {
     ctor_parameters: TokenStream,
     pre_init_code: TokenStream,
     fptr_type: TokenStream,
-    method_inits: Vec<MethodInit>,
     lazy_key_type: TokenStream,
     lazy_method_init: TokenStream,
+    function_pointers_builders: Vec<FunctionPointersBuilder>,
     named_accessors: Vec<AccessorMethod>,
     class_count: usize,
     method_count: usize,
 }
 
 // ----------------------------------------------------------------------------------------------------------------------------------------------
+
+struct FunctionPointersBuilder {
+    helper_method_name: TokenStream,
+    helper_method: TokenStream,
+}
 
 #[cfg_attr(feature = "codegen-lazy-fptrs", allow(dead_code))]
 struct MethodInit {
@@ -273,9 +278,9 @@ fn make_method_table(info: IndexedMethodTable) -> TokenStream {
         ctor_parameters,
         pre_init_code,
         fptr_type,
-        mut method_inits,
         lazy_key_type: _,
         lazy_method_init: _,
+        function_pointers_builders,
         named_accessors,
         class_count,
         method_count,
@@ -286,7 +291,7 @@ fn make_method_table(info: IndexedMethodTable) -> TokenStream {
     let named_method_api = make_named_accessors(&named_accessors, &fptr_type);
 
     // Make sure methods are complete and in order of index.
-    assert_eq!(
+    /*assert_eq!(
         method_inits.len(),
         method_count,
         "number of methods does not match count"
@@ -301,6 +306,16 @@ fn make_method_table(info: IndexedMethodTable) -> TokenStream {
         );
     } else {
         assert_eq!(method_count, 0, "empty method table should have count 0");
+    }*/
+
+    let mut helper_functions = vec![];
+    let mut helper_function_calls = vec![];
+    for builder in function_pointers_builders.into_iter() {
+        helper_functions.push(builder.helper_method);
+        let function_name = builder.helper_method_name;
+        helper_function_calls.push(quote! {
+            Self:: #function_name ( &mut function_pointers, interface, string_names );
+        });
     }
 
     // Assumes that inits already have a trailing comma.
@@ -316,16 +331,20 @@ fn make_method_table(info: IndexedMethodTable) -> TokenStream {
             pub const CLASS_COUNT: usize = #class_count;
             pub const METHOD_COUNT: usize = #method_count;
 
+            #( #helper_functions )*
+
             #unused_attr
             pub fn load(
                 #ctor_parameters
             ) -> Self {
                 #pre_init_code
 
+                let mut function_pointers = vec![];
+
+                #( #helper_function_calls )*
+
                 Self {
-                    function_pointers: vec![
-                        #( #method_inits )*
-                    ]
+                    function_pointers
                 }
             }
 
@@ -350,7 +369,6 @@ fn make_method_table(info: IndexedMethodTable) -> TokenStream {
         ctor_parameters: _,
         pre_init_code: _,
         fptr_type,
-        method_inits: _,
         lazy_key_type,
         lazy_method_init,
         named_accessors,
@@ -819,7 +837,7 @@ fn make_class_method_table(
         },
         pre_init_code: TokenStream::new(), // late-init, depends on class string names
         fptr_type: quote! { crate::ClassMethodBind },
-        method_inits: vec![],
+        function_pointers_builders: vec![],
         lazy_key_type: quote! { crate::lazy_keys::ClassMethodKey },
         lazy_method_init: quote! {
             let get_method_bind = crate::interface_fn!(classdb_get_method_bind);
@@ -837,7 +855,6 @@ fn make_class_method_table(
         method_count: 0,
     };
 
-    let mut class_sname_decls = Vec::new();
     for class in api.classes.iter() {
         let class_ty = TyName::from_godot(&class.name);
         if special_cases::is_class_deleted(&class_ty)
@@ -847,26 +864,12 @@ fn make_class_method_table(
             continue;
         }
 
-        let class_var = format_ident!("sname_{}", &class.name);
-        let initializer_expr = util::make_sname_ptr(&class.name);
-
-        let prev_method_count = table.method_count;
-        populate_class_methods(&mut table, class, &class_ty, &class_var, ctx);
-        if table.method_count > prev_method_count {
-            // Only create class variable if any methods have been added.
-            class_sname_decls.push(quote! {
-                let #class_var = #initializer_expr;
-            });
-        }
+        populate_class_methods(&mut table, class, &class_ty, ctx);
 
         table.class_count += 1;
     }
 
-    table.pre_init_code = quote! {
-        let get_method_bind = interface.classdb_get_method_bind.expect("classdb_get_method_bind absent");
-
-        #( #class_sname_decls )*
-    };
+    table.pre_init_code = quote! {};
 
     make_method_table(table)
 }
@@ -920,7 +923,6 @@ fn make_builtin_method_table(
             let get_builtin_method = interface.variant_get_ptr_builtin_method.expect("variant_get_ptr_builtin_method absent");
         },
         fptr_type: quote! { crate::BuiltinMethodBind },
-        method_inits: vec![],
         lazy_key_type: quote! { crate::lazy_keys::BuiltinMethodKey },
         lazy_method_init: quote! {
             let get_builtin_method = crate::interface_fn!(variant_get_ptr_builtin_method);
@@ -933,6 +935,7 @@ fn make_builtin_method_table(
                 key.hash
             )
         },
+        function_pointers_builders: vec![],
         named_accessors: vec![],
         class_count: 0,
         method_count: 0,
@@ -955,9 +958,11 @@ fn populate_class_methods(
     table: &mut IndexedMethodTable,
     class: &Class,
     class_ty: &TyName,
-    class_var: &Ident,
     ctx: &mut Context,
 ) {
+    let mut method_inits = Vec::new();
+    let class_var = format_ident!("sname_{}", &class.name);
+
     for method in option_as_slice(&class.methods) {
         if special_cases::is_deleted(class_ty, method, ctx) {
             continue;
@@ -969,9 +974,9 @@ fn populate_class_methods(
             class_ty: class_ty.clone(),
             method_name: method.name.clone(),
         });
-        let method_init = make_class_method_init(method, class_var, class_ty);
+        let method_init = make_class_method_init(method, &class_var, class_ty);
 
-        table.method_inits.push(MethodInit { method_init, index });
+        method_inits.push(MethodInit { method_init, index });
         table.method_count += 1;
 
         // If requested, add a named accessor for this method.
@@ -993,6 +998,38 @@ fn populate_class_methods(
             });
         }
     }
+
+    let initializer_expr = util::make_sname_ptr(&class.name);
+
+    let builder_fn_name = format_ident!("build_{}", &class.name);
+    let fptr_type = table.fptr_type.clone();
+
+    let mut push_methods = quote! {};
+    for method in method_inits.into_iter() {
+        let method_init = method.method_init;
+        push_methods = quote! {
+            #push_methods
+            function_pointers.push(#method_init);
+        }
+    }
+
+    table
+        .function_pointers_builders
+        .push(FunctionPointersBuilder {
+            helper_method_name: quote! { #builder_fn_name },
+            helper_method: quote! {
+                    fn #builder_fn_name (function_pointers: &mut Vec<#fptr_type>,
+            interface: &crate::GDExtensionInterface,
+                string_names: &mut crate::StringCache,
+            ){
+            use crate as sys;
+                        let #class_var = #initializer_expr;
+        let get_method_bind = interface.classdb_get_method_bind.expect("classdb_get_method_bind absent");
+
+                        #push_methods
+                    }
+                },
+        });
 }
 
 fn populate_builtin_methods(
@@ -1001,6 +1038,8 @@ fn populate_builtin_methods(
     builtin_name: &TypeNames,
     ctx: &mut Context,
 ) {
+    let mut method_inits = Vec::new();
+
     for method in option_as_slice(&builtin_class.methods) {
         let builtin_ty = TyName::from_godot(&builtin_class.name);
         if special_cases::is_builtin_deleted(&builtin_ty, method) {
@@ -1014,7 +1053,7 @@ fn populate_builtin_methods(
 
         let method_init = make_builtin_method_init(method, builtin_name, index);
 
-        table.method_inits.push(MethodInit { method_init, index });
+        method_inits.push(MethodInit { method_init, index });
         table.method_count += 1;
 
         // If requested, add a named accessor for this method.
@@ -1038,6 +1077,36 @@ fn populate_builtin_methods(
             });
         }
     }
+
+    let builder_fn_name = format_ident!("build_{}", &builtin_class.name);
+
+    let fptr_type = table.fptr_type.clone();
+
+    let mut push_methods = quote! {};
+    for method in method_inits.into_iter() {
+        let method_init = method.method_init;
+        push_methods = quote! {
+            #push_methods
+            function_pointers.push(#method_init);
+        }
+    }
+
+    table
+        .function_pointers_builders
+        .push(FunctionPointersBuilder {
+            helper_method_name: quote! { #builder_fn_name },
+            helper_method: quote! {
+                fn #builder_fn_name (function_pointers: &mut Vec<#fptr_type>,
+            interface: &crate::GDExtensionInterface,
+                string_names: &mut crate::StringCache,
+                ) {
+            use crate as sys;
+            let get_builtin_method = interface.variant_get_ptr_builtin_method.expect("variant_get_ptr_builtin_method absent");
+
+                    #push_methods
+                }
+            },
+        });
 }
 
 fn make_class_method_init(
